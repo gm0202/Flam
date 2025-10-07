@@ -19,10 +19,14 @@ class NativeLib {
     }
 
     /**
-     * A native method that is implemented by the 'native-lib' native library
-     * which is packaged with this application.
+     * Process NV21 image data using native code
+     * @param data The NV21 image data
+     * @param width Image width
+     * @param height Image height
+     * @param mode Processing mode (0 = raw, 1 = edge detection)
+     * @return Processed image data
      */
-    external fun stringFromJNI(): String
+    external fun processNV21(data: ByteArray, width: Int, height: Int, mode: Int): ByteArray
 
     companion object {
         private const val TAG = "NativeLib"
@@ -31,6 +35,7 @@ class NativeLib {
         @Volatile
         private var instance: NativeLib? = null
         
+        @JvmStatic
         fun getInstance(): NativeLib {
             return instance ?: synchronized(this) {
                 instance ?: NativeLib().also { instance = it }

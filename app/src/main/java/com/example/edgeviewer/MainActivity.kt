@@ -8,7 +8,8 @@ import android.util.Log
 import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
-import com.google.android.material.switchmaterial.SwitchMaterial
+import android.widget.ToggleButton
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -24,35 +25,66 @@ class MainActivity : AppCompatActivity() {
     }
     
     private lateinit var glSurfaceView: GLSurfaceView
-    private lateinit var toggleMode: SwitchMaterial
+    private lateinit var toggleMode: ToggleButton
     private lateinit var fpsText: TextView
     private lateinit var btnStartStop: Button
     
     private var isProcessing = false
+    private lateinit var cameraController: CameraController
     
     override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
-        
-        // Set up edge-to-edge display
-        WindowCompat.setDecorFitsSystemWindows(window, false)
-        WindowInsetsControllerCompat(window, window.decorView).let { controller ->
-            controller.hide(WindowInsetsCompat.Type.systemBars())
-            controller.systemBarsBehavior =
-                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        }
-        
-        // Initialize views
-        glSurfaceView = findViewById(R.id.glSurface)
-        toggleMode = findViewById(R.id.toggleMode)
-        fpsText = findViewById(R.id.fpsText)
-        btnStartStop = findViewById(R.id.btnStartStop)
-        
-        // Set up UI listeners
-        setupUI()
-        
-        // Request camera permission if not granted
-        if (!hasCameraPermission()) {
+        try {
+            super.onCreate(savedInstanceState)
+            Log.d(TAG, "onCreate: Starting app initialization")
+            
+            setContentView(R.layout.activity_main)
+            
+            // Set up edge-to-edge display
+            try {
+                WindowCompat.setDecorFitsSystemWindows(window, false)
+                WindowInsetsControllerCompat(window, window.decorView).let { controller ->
+                    controller.hide(WindowInsetsCompat.Type.systemBars())
+                    controller.systemBarsBehavior =
+                        WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error setting up edge-to-edge display", e)
+            }
+            
+            // Initialize views
+            try {
+                glSurfaceView = findViewById(R.id.glSurface)
+                toggleMode = findViewById(R.id.toggleMode)
+                fpsText = findViewById(R.id.fpsText)
+                btnStartStop = findViewById(R.id.btnStartStop)
+                
+                // Initialize CameraController
+                cameraController = CameraController(this)
+                
+                // Set up UI listeners
+                setupUI()
+                
+                // Request camera permission if not granted
+                if (!hasCameraPermission()) {
+                    requestCameraPermission()
+                } else {
+                    Log.d(TAG, "Camera permission already granted")
+                }
+                
+                Log.d(TAG, "App initialization completed successfully")
+                
+            } catch (e: Exception) {
+                Log.e(TAG, "Error initializing views", e)
+                showErrorAndFinish("Failed to initialize app: ${e.message}")
+            }
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Critical error in onCreate", e)
+            // Try to show error to user before crashing
+            try {
+                Toast.makeText(this, "App failed to start: ${e.message}", Toast.LENGTH_LONG).show()
+            } catch (ignored: Exception) {}
+            finish()
         }
     }
     
@@ -73,46 +105,58 @@ class MainActivity : AppCompatActivity() {
         }
         
         toggleMode.setOnCheckedChangeListener { _, isChecked ->
-            // Toggle between raw and edge detection modes
-            if (hasCameraPermission()) {
-                setEdgeDetectionMode(isChecked)
-            }
+            setEdgeDetectionMode(isChecked)
         }
     }
     
     private fun startProcessing() {
         Log.d(TAG, "Starting camera processing")
-        initializeCamera()
-        startCameraPreview()
+        
+        // Initialize camera preview
+        cameraController.onFrameAvailable = { data, width, height ->
+            // Process frame in native code
+            NativeLib.getInstance().processNV21(data, width, height, if (toggleMode.isChecked) 1 else 0)
+        }
+        
+        cameraController.startPreview()
+        
+        // Initialize OpenGL
+        initializeGL()
     }
     
     private fun stopProcessing() {
         Log.d(TAG, "Stopping camera processing")
-        stopCameraPreview()
+        cameraController.stopPreview()
     }
     
     private fun updateUI() {
-        btnStartStop.text = if (isProcessing) getString(R.string.stop) else getString(R.string.start)
+        btnStartStop.text = if (isProcessing) "Stop" else "Start"
     }
     
     private fun setEdgeDetectionMode(enabled: Boolean) {
-        // TODO: Implement edge detection mode change
-        Log.d(TAG, "Edge detection mode: $enabled")
+        // Mode is handled in the frame callback
+        Log.d(TAG, "Edge detection mode: ${if (enabled) "Edge" else "Raw"}")
     }
     
-    private fun initializeCamera() {
-        // Initialize camera and related components
-        glSurfaceView.setEGLContextClientVersion(2)
-        // TODO: Set up renderer
-        // glSurfaceView.setRenderer(MyGLRenderer())
-    }
-    
-    private fun startCameraPreview() {
-        glSurfaceView.onResume()
-    }
-    
-    private fun stopCameraPreview() {
-        glSurfaceView.onPause()
+    private fun initializeGL() {
+        try {
+            Log.d(TAG, "Initializing OpenGL")
+            
+            // Initialize OpenGL ES 2.0 context
+            glSurfaceView.setEGLContextClientVersion(2)
+            
+            // Set up renderer
+            // glSurfaceView.setRenderer(MyGLRenderer())
+            
+            // Set render mode to when dirty (only render when we have new data)
+            glSurfaceView.renderMode = GLSurfaceView.RENDERMODE_WHEN_DIRTY
+            
+            Log.d(TAG, "OpenGL initialization completed")
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error initializing OpenGL", e)
+            throw RuntimeException("Failed to initialize OpenGL: ${e.message}", e)
+        }
     }
     
     private fun hasCameraPermission(): Boolean {
@@ -139,44 +183,71 @@ class MainActivity : AppCompatActivity() {
         
         if (requestCode == CAMERA_PERMISSION_CODE) {
             if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                initializeCamera()
+                // Permission granted
+                if (isProcessing) {
+                    startProcessing()
+                }
             } else {
-                Toast.makeText(
-                    this,
-                    "Camera permission is required for this app to function",
-                    Toast.LENGTH_LONG
-                ).show()
+                // Permission denied
+                showPermissionDeniedDialog()
+            }
+        }
+    }
+    
+    private fun showPermissionDeniedDialog() {
+        AlertDialog.Builder(this)
+            .setTitle("Camera Permission Required")
+            .setMessage("This app needs camera permission to function properly.")
+            .setPositiveButton("Grant Permission") { _, _ ->
+                requestCameraPermission()
+            }
+            .setNegativeButton("Cancel") { dialog, _ ->
+                dialog.dismiss()
+                isProcessing = false
+                updateUI()
+            }
+            .setCancelable(false)
+            .show()
+    }
+    
+    override fun onResume() {
+        super.onResume()
+        if (isProcessing) {
+            cameraController.startPreview()
+        }
+        glSurfaceView.onResume()
+    }
+    
+    override fun onPause() {
+        super.onPause()
+        cameraController.stopPreview()
+        glSurfaceView.onPause()
+    }
+    
+    override fun onDestroy() {
+        super.onDestroy()
+        cameraController.release()
+    }
+    
+    private fun showErrorAndFinish(message: String) {
+        Log.e(TAG, message)
+        runOnUiThread {
+            try {
+                AlertDialog.Builder(this)
+                    .setTitle("Error")
+                    .setMessage(message)
+                    .setPositiveButton("OK") { _, _ -> finish() }
+                    .setCancelable(false)
+                    .show()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error showing error dialog", e)
                 finish()
             }
         }
     }
     
-    override fun onResume() {
-        super.onResume()
-        if (hasCameraPermission()) {
-            if (isProcessing) {
-                startProcessing()
-            } else {
-                glSurfaceView.onResume()
-            }
-        }
-    }
-    
-    override fun onPause() {
-        super.onPause()
-        if (isProcessing) {
-            stopProcessing()
-        } else {
-            glSurfaceView.onPause()
-        }
-    }
-    
-    // Function to update FPS on UI thread
-    private fun updateFps(fps: Int) {
-        runOnUiThread {
-            fpsText.text = "FPS: $fps"
-        }
-    }
+    // Native function declarations
+    private external fun processFrame(data: ByteArray, width: Int, height: Int, mode: Int)
     
     // Load native library
     init {
