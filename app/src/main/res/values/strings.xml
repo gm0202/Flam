@@ -1,0 +1,23 @@
+<resources>
+    <string name="app_name">EdgeViewer</string>
+    
+    <!-- Button text -->
+    <string name="start">Start</string>
+    <string name="stop">Stop</string>
+    
+    <!-- Toggle button text -->
+    <string name="raw_mode">Raw</string>
+    <string name="edge_mode">Edge</string>
+    <string name="raw_edge_toggle">Raw / Edge</string>
+    
+    <!-- FPS display -->
+    <string name="fps_format">FPS: %1$d</string>
+    
+    <!-- Permission messages -->
+    <string name="camera_permission_required">Camera permission is required for this feature</string>
+    <string name="camera_permission_rationale">This app needs camera permission to display the camera preview</string>
+    
+    <!-- Error messages -->
+    <string name="error_camera_unavailable">Camera is not available</string>
+    <string name="error_camera_permission_denied">Camera permission was denied</string>
+</resources>

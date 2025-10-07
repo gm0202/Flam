@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Widget styles -->
+    <style name="Widget.EdgeViewer.ToggleButton" parent="Widget.MaterialComponents.CompoundButton.Switch">
+        <item name="android:textColor">@android:color/white</item>
+        <item name="android:textSize">14sp</item>
+        <item name="android:padding">8dp</item>
+        <item name="trackTint">@color/purple_200</item>
+        <item name="thumbTint">@color/purple_500</item>
+    </style>
+    
+    <style name="Widget.EdgeViewer.TextView" parent="TextAppearance.MaterialComponents.Subtitle1">
+        <item name="android:textColor">@android:color/white</item>
+        <item name="android:textSize">16sp</item>
+        <item name="android:textStyle">bold</item>
+    </style>
+</resources>
