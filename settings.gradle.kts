@@ -21,4 +21,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "FLAM"
 include(":app")
- 
+include(":opencv")
