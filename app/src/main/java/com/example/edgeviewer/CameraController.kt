@@ -21,12 +21,20 @@ class CameraController(private val context: Context) {
     private var imageReader: ImageReader? = null
     private val backgroundHandler: Handler
     private val backgroundThread: HandlerThread
-    private val cameraExecutor = Executors.newSingleThreadExecutor()
+    private val processingExecutor = Executors.newSingleThreadExecutor()
     private val isProcessing = AtomicBoolean(false)
     private var frameCount = 0
     private var lastFrameTime = System.currentTimeMillis()
+    private var firstFrameSent = false
     
-    // Callback for handling image data
+    // Reusable NV21 buffer to avoid allocations every frame
+    private var nv21Buffer: ByteArray? = null
+    private val nativeLib = NativeLib.getInstance()
+    
+    // Processing mode: 0 = raw, 1 = edge detection
+    var processingMode = 1
+    
+    // Callback for handling processed image data
     var onFrameAvailable: ((data: ByteArray, width: Int, height: Int) -> Unit)? = null
     
     init {
@@ -107,7 +115,7 @@ class CameraController(private val context: Context) {
     fun release() {
         stopPreview()
         backgroundThread.quitSafely()
-        cameraExecutor.shutdown()
+        processingExecutor.shutdown()
     }
     
     private fun createCaptureSession(camera: CameraDevice, surface: Surface) {
@@ -139,40 +147,111 @@ class CameraController(private val context: Context) {
         if (image == null) return
         
         try {
-            // Calculate FPS
-            frameCount++
-            val currentTime = System.currentTimeMillis()
-            if (currentTime - lastFrameTime >= 1000) { // Update FPS every second
-                val fps = (frameCount * 1000f / (currentTime - lastFrameTime)).toInt()
-                Log.d(TAG, "FPS: $fps")
-                frameCount = 0
-                lastFrameTime = currentTime
+            val width = image.width
+            val height = image.height
+            
+            // Initialize reusable buffer if needed
+            val bufferSize = width * height * 3 / 2
+            if (nv21Buffer == null || nv21Buffer!!.size != bufferSize) {
+                nv21Buffer = ByteArray(bufferSize)
+                Log.d(TAG, "Allocated NV21 buffer: ${width}x${height}")
             }
             
-            // Convert YUV_420_888 to NV21
-            val width = image.width
-            val height = image.planes[0].rowStride
-            val nv21 = ByteArray(width * height * 3 / 2) // YUV420 format size
+            // Convert YUV_420_888 to NV21 (reusing buffer)
+            yuv420ToNv21(image, nv21Buffer!!)
             
-            val yBuffer = image.planes[0].buffer
-            val uBuffer = image.planes[1].buffer
-            val vBuffer = image.planes[2].buffer
-            
-            yBuffer.get(nv21, 0, width * height)
-            
-            // Interleave U and V
-            val uvBuffer = nv21.copyOfRange(width * height, nv21.size)
-            
-            // Notify listener on background thread
-            onFrameAvailable?.invoke(nv21, width, height)
-            
-            // Log first frame
-            if (frameCount == 1) {
-                Log.d(TAG, "frameSentToNative")
+            // Process on executor (not UI thread)
+            processingExecutor.execute {
+                try {
+                    // Log first frame sent to native
+                    if (!firstFrameSent) {
+                        Log.d(TAG, "frameSentToNative")
+                        firstFrameSent = true
+                    }
+                    
+                    // Call native processing
+                    val processedData = nativeLib.processNV21(
+                        nv21Buffer!!,
+                        width,
+                        height,
+                        processingMode
+                    )
+                    
+                    // Notify callback with processed data
+                    onFrameAvailable?.invoke(processedData, width, height)
+                    
+                    // Calculate FPS
+                    frameCount++
+                    val currentTime = System.currentTimeMillis()
+                    if (currentTime - lastFrameTime >= 1000) {
+                        val fps = (frameCount * 1000f / (currentTime - lastFrameTime)).toInt()
+                        Log.d(TAG, "Processing FPS: $fps")
+                        frameCount = 0
+                        lastFrameTime = currentTime
+                    }
+                    
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error processing frame: ${e.message}")
+                }
             }
             
         } finally {
             image.close()
+        }
+    }
+    
+    /**
+     * Convert YUV_420_888 Image to NV21 byte array (reuses buffer)
+     */
+    private fun yuv420ToNv21(image: Image, nv21: ByteArray) {
+        val width = image.width
+        val height = image.height
+        
+        val yPlane = image.planes[0]
+        val uPlane = image.planes[1]
+        val vPlane = image.planes[2]
+        
+        val yBuffer = yPlane.buffer
+        val uBuffer = uPlane.buffer
+        val vBuffer = vPlane.buffer
+        
+        val yRowStride = yPlane.rowStride
+        val uvRowStride = uPlane.rowStride
+        val uvPixelStride = uPlane.pixelStride
+        
+        var pos = 0
+        
+        // Copy Y plane
+        if (yRowStride == width) {
+            // Optimized path: direct copy
+            yBuffer.get(nv21, 0, width * height)
+            pos = width * height
+        } else {
+            // Row by row copy
+            for (row in 0 until height) {
+                yBuffer.position(row * yRowStride)
+                yBuffer.get(nv21, pos, width)
+                pos += width
+            }
+        }
+        
+        // Copy UV planes (interleaved as VU for NV21)
+        val uvHeight = height / 2
+        val uvWidth = width / 2
+        
+        for (row in 0 until uvHeight) {
+            vBuffer.position(row * uvRowStride)
+            uBuffer.position(row * uvRowStride)
+            
+            for (col in 0 until uvWidth) {
+                nv21[pos++] = vBuffer.get()
+                nv21[pos++] = uBuffer.get()
+                
+                if (uvPixelStride == 2) {
+                    vBuffer.get() // Skip padding
+                    uBuffer.get() // Skip padding
+                }
+            }
         }
     }
     
@@ -186,28 +265,6 @@ class CameraController(private val context: Context) {
         }.minByOrNull { it.width * it.height }
         
         // If nothing is big enough, choose the largest available size
-        return bigEnough ?: choices.maxByOrNull { it.width * it.height } ?: choices[0]
+        return bigEnough ?: choices.maxByOrNull { it.width * it.height } ?: Size(1280, 720)
     }
-}
-
-// Extension function to convert YUV_420_888 to NV21
-private fun Image.toNv21(): ByteArray {
-    val yBuffer = planes[0].buffer
-    val uBuffer = planes[1].buffer
-    val vBuffer = planes[2].buffer
-    
-    val ySize = yBuffer.remaining()
-    val uSize = uBuffer.remaining()
-    val vSize = vBuffer.remaining()
-    
-    val nv21 = ByteArray(ySize + uSize + vSize)
-    
-    // Y channel
-    yBuffer.get(nv21, 0, ySize)
-    
-    // Interleave U and V
-    vBuffer.get(nv21, ySize, vSize)
-    uBuffer.get(nv21, ySize + vSize, uSize)
-    
-    return nv21
 }
